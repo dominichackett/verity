@@ -1,0 +1,25 @@
+name: VerityMarketResolution
+schema_version: 1.0.0
+type: Workflow
+
+trigger:
+  type: Cron
+  config:
+    schedule: "0 */1 * * *" # Runs every hour
+
+consensus:
+  type: OffchainConsensus
+  config:
+    aggregation_method: "Mode" # Consensus on the most common result
+
+capabilities:
+  - name: http_fetcher
+    type: HTTP
+  - name: evm_writer
+    type: EVM
+    config:
+      network: flow-testnet
+
+handler:
+  runtime: TypeScript
+  source_file: src/index.ts

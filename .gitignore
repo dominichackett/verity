@@ -1,0 +1,33 @@
+# Docs folder
+docs/
+# Dependency directories
+node_modules/
+
+# Next.js build output
+.next/
+out/
+
+# Hardhat artifacts
+artifacts/
+cache/
+typechain-types/
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+
+# Turbo cache
+.turbo/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Log files
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# CRE artifacts
+workflows/dist/
