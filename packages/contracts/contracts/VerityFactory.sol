@@ -34,7 +34,8 @@ contract VerityFactory is Ownable {
         VerityMarket.Category _category,
         string memory _sportType,
         string memory _teams,
-        uint256 _deadline
+        uint256 _deadline,
+        bool _hasDraw
     ) external payable {
         require(msg.value == MARKET_BOND, "Must pay 5 FLOW bond");
 
@@ -44,6 +45,7 @@ contract VerityFactory is Ownable {
             _sportType,
             _teams,
             _deadline,
+            _hasDraw,
             treasury
         );
 
@@ -69,15 +71,13 @@ contract VerityFactory is Ownable {
         record.resolved = true;
 
         // Bond handling
-        if (_outcome == VerityMarket.Outcome.YES || _outcome == VerityMarket.Outcome.NO) {
+        if (_outcome == VerityMarket.Outcome.YES || _outcome == VerityMarket.Outcome.NO || _outcome == VerityMarket.Outcome.DRAW) {
             // Clean resolution, return bond to creator
             payable(record.creator).transfer(MARKET_BOND);
         } else if (_outcome == VerityMarket.Outcome.VOID) {
             // Voided, return bond
             payable(record.creator).transfer(MARKET_BOND);
         } else if (_outcome == VerityMarket.Outcome.CONFLICT) {
-            // In CRE context, conflict might be handled by another workflow or admin
-            // For now, we return bond to keep it simple, or we could slash it.
             payable(record.creator).transfer(MARKET_BOND);
         }
 
