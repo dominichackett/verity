@@ -4,16 +4,16 @@ pragma solidity ^0.8.24;
 import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 
 contract VerityMarket is ReentrancyGuard {
-    enum Category { SPORTS, CRYPTO, POPCULTURE }
     // 0=NO, 1=YES, 2=DRAW, 3=CONFLICT, 4=VOID
     enum Outcome { NO, YES, DRAW, CONFLICT, VOID }
 
     string public question;
-    Category public category;
-    string public sportType;
-    string public teams;
+    string public category;
+    string public league;    // e.g., "Premier League", "NBA", "NFL"
+    string public sportType; // e.g., "Soccer", "Basketball"
+    string public teams;     // e.g., "Arsenal vs Man City"
     uint256 public deadline;
-    bool public hasDraw; // If true, 3-way market. If false, 2-way (Yes/No).
+    bool public hasDraw;    // If true, 3-way market. If false, 2-way (Yes/No).
     
     uint256 public yesPool;
     uint256 public noPool;
@@ -35,7 +35,8 @@ contract VerityMarket is ReentrancyGuard {
 
     constructor(
         string memory _question,
-        Category _category,
+        string memory _category,
+        string memory _league,
         string memory _sportType,
         string memory _teams,
         uint256 _deadline,
@@ -44,6 +45,7 @@ contract VerityMarket is ReentrancyGuard {
     ) {
         question = _question;
         category = _category;
+        league = _league;
         sportType = _sportType;
         teams = _teams;
         deadline = _deadline;

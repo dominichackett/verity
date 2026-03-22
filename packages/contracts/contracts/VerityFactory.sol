@@ -31,7 +31,8 @@ contract VerityFactory is Ownable {
 
     function createMarket(
         string memory _question,
-        VerityMarket.Category _category,
+        string memory _category,
+        string memory _league,
         string memory _sportType,
         string memory _teams,
         uint256 _deadline,
@@ -42,6 +43,7 @@ contract VerityFactory is Ownable {
         VerityMarket newMarket = new VerityMarket(
             _question,
             _category,
+            _league,
             _sportType,
             _teams,
             _deadline,
