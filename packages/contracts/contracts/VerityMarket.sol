@@ -8,12 +8,12 @@ contract VerityMarket is ReentrancyGuard {
     enum Outcome { NO, YES, DRAW, CONFLICT, VOID }
 
     string public question;
-    string public category;
-    string public league;    // e.g., "Premier League", "NBA", "NFL"
-    string public sportType; // e.g., "Soccer", "Basketball"
-    string public teams;     // e.g., "Arsenal vs Man City"
+    string public category;    // e.g., "Sports", "Crypto", "Politics"
+    string public subCategory; // e.g., "Premier League", "Price Action", "Elections"
+    string public topic;       // e.g., "Soccer", "Bitcoin", "USA"
+    string public context;     // e.g., "Arsenal vs Man City", "BTC/USD", "General Election"
     uint256 public deadline;
-    bool public hasDraw;    // If true, 3-way market. If false, 2-way (Yes/No).
+    bool public hasDraw;       // If true, 3-way market. If false, 2-way (Yes/No).
     
     uint256 public yesPool;
     uint256 public noPool;
@@ -36,18 +36,18 @@ contract VerityMarket is ReentrancyGuard {
     constructor(
         string memory _question,
         string memory _category,
-        string memory _league,
-        string memory _sportType,
-        string memory _teams,
+        string memory _subCategory,
+        string memory _topic,
+        string memory _context,
         uint256 _deadline,
         bool _hasDraw,
         address _treasury
     ) {
         question = _question;
         category = _category;
-        league = _league;
-        sportType = _sportType;
-        teams = _teams;
+        subCategory = _subCategory;
+        topic = _topic;
+        context = _context;
         deadline = _deadline;
         hasDraw = _hasDraw;
         factory = msg.sender;

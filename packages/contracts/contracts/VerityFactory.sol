@@ -32,9 +32,9 @@ contract VerityFactory is Ownable {
     function createMarket(
         string memory _question,
         string memory _category,
-        string memory _league,
-        string memory _sportType,
-        string memory _teams,
+        string memory _subCategory,
+        string memory _topic,
+        string memory _context,
         uint256 _deadline,
         bool _hasDraw
     ) external payable {
@@ -43,9 +43,9 @@ contract VerityFactory is Ownable {
         VerityMarket newMarket = new VerityMarket(
             _question,
             _category,
-            _league,
-            _sportType,
-            _teams,
+            _subCategory,
+            _topic,
+            _context,
             _deadline,
             _hasDraw,
             treasury
