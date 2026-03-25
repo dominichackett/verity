@@ -6,7 +6,7 @@
   "scripts": {
     "test": "hardhat test",
     "compile": "hardhat compile",
-    "deploy:flow-testnet": "hardhat run scripts/deploy.ts --network flow-testnet"
+    "deploy:flow-testnet": "hardhat run scripts/deploy.ts --network flowTestnet"
   },
   "devDependencies": {
     "@nomicfoundation/hardhat-toolbox": "^5.0.0",

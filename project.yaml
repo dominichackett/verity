@@ -1,0 +1,11 @@
+# Verity CRE Project Settings
+
+default:
+  rpcs:
+    - chain-name: flow-evm-testnet
+      url: https://testnet.evm.nodes.onflow.org
+
+experimental-chains:
+  - chain-name: flow-evm-testnet
+    chain-id: 545
+    rpc-url: https://testnet.evm.nodes.onflow.org
