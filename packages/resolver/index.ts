@@ -1,6 +1,5 @@
 import { ethers } from "ethers";
 import { createClient } from "@supabase/supabase-js";
-import { GoogleGenerativeAI } from "@google/generative-ai";
 import * as dotenv from "dotenv";
 import path from "path";
 
@@ -13,11 +12,11 @@ const PRIVATE_KEY = process.env.PRIVATE_KEY || "";
 const SUPABASE_URL = process.env.SUPABASE_URL || "";
 const SUPABASE_KEY = process.env.SUPABASE_SERVICE_KEY || "";
 const GEMINI_KEY = process.env.GOOGLE_GEMINI_API_KEY || "";
+const MODEL_NAME = process.env.AI_MODEL_NAME || "gemini-1.5-pro";
 
 const provider = new ethers.JsonRpcProvider(RPC_URL);
 const wallet = new ethers.Wallet(PRIVATE_KEY, provider);
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
-const genAI = new GoogleGenerativeAI(GEMINI_KEY);
 
 const FACTORY_ABI = [
   "function getMarketsCount() external view returns (uint256)",
@@ -85,28 +84,39 @@ async function run() {
       console.log(`🤖 Resolving: ${question}`);
 
       try {
-        const model = genAI.getGenerativeModel({ 
-          model: process.env.AI_MODEL_NAME || "gemini-1.5-pro",
-          tools: [{ googleSearchRetrieval: {} } as any] 
-        });
-
-        const prompt = `You are a universal market resolver. Search the web to find the result for this question:
-        "${question}"
-        Main Category: ${category} | Sub-Category: ${subCategory} | Topic: ${topic}
-        Details: ${context}
-        3-way market allowed: ${hasDraw}
+        const prompt = `You are a universal market resolver for the Verity Prediction Market.
+        Search the web to find the official result for this question:
+        
+        Question: "${question}"
+        Main Category: ${category}
+        Sub-Category: ${subCategory}
+        Topic: ${topic}
+        Contextual Details: ${context}
+        3-way market (Draw allowed): ${hasDraw}
         
         Rules:
+        - Use Google Search to verify the outcome from official and high-authority sources.
         - Return ONLY a raw JSON object.
-        - verdict: 0 (NO), 1 (YES), 2 (DRAW).
-        - reasoning: a short 1-sentence explanation of the result.
+        - verdict: 0 (NO/FALSE), 1 (YES/TRUE), 2 (DRAW/TIE).
+        - reasoning: a short 1-sentence explanation of the factual result found.
         
         JSON Format: {"verdict": number, "reasoning": "string"}`;
 
-        const result = await model.generateContent(prompt);
-        const response = result.response;
-        const text = response.text().replace(/```json|```/g, "").trim();
-        const data = JSON.parse(text);
+        const response = await fetch(
+          `https://generativelanguage.googleapis.com/v1beta/models/${MODEL_NAME}:generateContent?key=${GEMINI_KEY}`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              contents: [{ parts: [{ text: prompt }] }],
+              tools: [{ google_search_retrieval: {} }],
+              generationConfig: { response_mime_type: "application/json" }
+            })
+          }
+        );
+
+        const result: any = await response.json();
+        const data = JSON.parse(result.candidates[0].content.parts[0].text);
 
         console.log(`✅ AI Verdict: ${data.verdict} | ${data.reasoning}`);
 
