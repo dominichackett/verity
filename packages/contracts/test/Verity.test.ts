@@ -103,6 +103,45 @@ describe("Verity Polymarket Mechanism", function () {
       expect(user1NoBalance).to.equal(0); 
     });
 
+    it("Should support markets with DRAW option", async function () {
+      const deadline = (await ethers.provider.getBlock("latest"))!.timestamp + 1000;
+      const tx = await factory.connect(creator).createMarket(
+        "Soccer: Team A vs Team B", "Sports", "Soccer", "Match", "Match Result", deadline, true,
+        { value: MARKET_BOND }
+      );
+      const receipt = await tx.wait();
+      const event = receipt?.logs.find(log => (log as any).fragment?.name === 'MarketCreated');
+      const drawMarketAddress = (event as any).args[0];
+      const drawAmmAddress = (event as any).args[1];
+      const drawMarket = await ethers.getContractAt("VerityMarket", drawMarketAddress);
+      const drawAmm = await ethers.getContractAt("VerityAMM", drawAmmAddress);
+
+      expect(await drawMarket.hasDraw()).to.be.true;
+
+      const liquidityAmount = ethers.parseUnits("1000", 6);
+      await usdc.mint(owner.address, liquidityAmount);
+      await usdc.approve(drawAmmAddress, liquidityAmount);
+      await drawAmm.addLiquidity(liquidityAmount);
+
+      expect(await drawMarket.balanceOf(drawAmmAddress, 2)).to.equal(ethers.parseUnits("1000", 18)); // DRAW_ID is 2
+
+      // User buys DRAW
+      const buyAmount = ethers.parseUnits("100", 6);
+      await usdc.mint(user1.address, buyAmount);
+      await usdc.connect(user1).approve(drawAmmAddress, buyAmount);
+
+      await drawAmm.connect(user1).buy(2, buyAmount, 0); // Buy DRAW
+
+      const user1DrawBalance = await drawMarket.balanceOf(user1.address, 2);
+      expect(user1DrawBalance).to.be.gt(ethers.parseUnits("100", 18)); 
+
+      // Sell DRAW
+      await drawMarket.connect(user1).setApprovalForAll(drawAmmAddress, true);
+      await drawAmm.connect(user1).sell(2, user1DrawBalance, 0);
+
+      expect(await drawMarket.balanceOf(user1.address, 2)).to.equal(0);
+    });
+
     it("Should resolve market and allow winning share redemption", async function () {
       const amount = ethers.parseUnits("100", 6);
       await usdc.mint(user1.address, amount);

@@ -30,6 +30,7 @@ const FACTORY_ABI = [
 
 const MARKET_ABI = [
   "function question() external view returns (string)",
+  "function category() external view returns (string)",
   "function deadline() external view returns (uint256)",
   "function hasDraw() external view returns (bool)",
   "function collateralToken() external view returns (address)",
@@ -55,9 +56,9 @@ async function run() {
 
         // --- INDEXING LOGIC ---
         const [
-          question, deadline, hasDraw, collateralToken, resolvedOnMarket, outcome
+          question, category, deadline, hasDraw, collateralToken, resolvedOnMarket, outcome
         ] = await Promise.all([
-          market.question(), market.deadline(), 
+          market.question(), market.category(), market.deadline(), 
           market.hasDraw(), market.collateralToken(),
           market.resolved(), market.outcome()
         ]);
@@ -77,7 +78,7 @@ async function run() {
             console.log("Could not fetch AMM reserves, using defaults.");
         }
 
-        console.log(`📊 Indexing: ${question} | YES: $${yesPrice.toFixed(2)}`);
+        console.log(`📊 Indexing: ${question} | Category: ${category} | YES: $${yesPrice.toFixed(2)}`);
 
         const { error: upsertError } = await supabase.from("markets").upsert({
           address: marketAddress,
@@ -85,7 +86,7 @@ async function run() {
           factory_address: FACTORY_ADDRESS,
           creator_address: creator,
           question,
-          category: "Unknown", 
+          category, 
           deadline: new Date(Number(deadline) * 1000).toISOString(),
           has_draw: hasDraw,
           collateral_token: collateralToken,

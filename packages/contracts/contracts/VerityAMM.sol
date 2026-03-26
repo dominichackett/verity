@@ -18,6 +18,7 @@ contract VerityAMM is ERC1155Holder, ReentrancyGuard {
 
     uint256 public constant NO_ID = 0;
     uint256 public constant YES_ID = 1;
+    uint256 public constant DRAW_ID = 2;
 
     event LiquidityAdded(address indexed provider, uint256 amount);
     event SharesBought(address indexed buyer, uint256 outcomeIndex, uint256 collateralSpent, uint256 sharesReceived);
@@ -29,7 +30,7 @@ contract VerityAMM is ERC1155Holder, ReentrancyGuard {
     }
 
     /**
-     * @dev Add liquidity by providing equal amounts of YES and NO shares.
+     * @dev Add liquidity by providing equal amounts of all shares.
      * This is the same as providing collateral, which the AMM splits.
      */
     function addLiquidity(uint256 amount) external nonReentrant {
@@ -38,21 +39,21 @@ contract VerityAMM is ERC1155Holder, ReentrancyGuard {
         // Approve market to spend collateral
         collateralToken.approve(address(market), amount);
         
-        // Split collateral into YES and NO shares
+        // Split collateral into shares (YES, NO, and DRAW if applicable)
         market.mintShares(amount);
         
-        // Now this contract holds 'amount' YES and 'amount' NO
         emit LiquidityAdded(msg.sender, amount);
     }
 
     /**
      * @dev Buy shares of a specific outcome using collateral.
-     * @param outcomeIndex 0 for NO, 1 for YES.
+     * @param outcomeIndex 0 for NO, 1 for YES, 2 for DRAW.
      * @param collateralAmount Amount of collateral to spend.
      * @param minShares Minimum shares to receive (slippage protection).
      */
     function buy(uint256 outcomeIndex, uint256 collateralAmount, uint256 minShares) external nonReentrant {
-        require(outcomeIndex <= 1, "Invalid outcome");
+        bool hasDraw = market.hasDraw();
+        require(outcomeIndex <= (hasDraw ? 2 : 1), "Invalid outcome");
         require(collateralAmount > 0, "Amount must be > 0");
 
         uint256 yesReserves = market.balanceOf(address(this), YES_ID);
@@ -61,20 +62,32 @@ contract VerityAMM is ERC1155Holder, ReentrancyGuard {
         // 1. Transfer collateral from user
         require(collateralToken.transferFrom(msg.sender, address(this), collateralAmount), "Transfer failed");
 
-        // 2. Split collateral into YES and NO
+        // 2. Split collateral into shares
         collateralToken.approve(address(market), collateralAmount);
         market.mintShares(collateralAmount);
 
-        // 3. Swap the "other" share for the "desired" share
-        // IMPORTANT: We must use the 18-decimal share amount for the swap math
+        // 3. Swap the "other" shares for the "desired" share
         uint256 shareAmountFromSplit = collateralAmount * 10**12;
         uint256 sharesToReturn;
 
-        if (outcomeIndex == YES_ID) {
-            uint256 swapOut = yesReserves - (noReserves * yesReserves) / (noReserves + shareAmountFromSplit);
+        if (!hasDraw) {
+            uint256 swapOut;
+            if (outcomeIndex == YES_ID) {
+                swapOut = yesReserves - (noReserves * yesReserves) / (noReserves + shareAmountFromSplit);
+            } else {
+                swapOut = noReserves - (noReserves * yesReserves) / (yesReserves + shareAmountFromSplit);
+            }
             sharesToReturn = shareAmountFromSplit + swapOut;
         } else {
-            uint256 swapOut = noReserves - (noReserves * yesReserves) / (yesReserves + shareAmountFromSplit);
+            uint256 drawReserves = market.balanceOf(address(this), DRAW_ID);
+            uint256 swapOut;
+            if (outcomeIndex == YES_ID) {
+                swapOut = yesReserves - (yesReserves * noReserves * drawReserves) / ((noReserves + shareAmountFromSplit) * (drawReserves + shareAmountFromSplit));
+            } else if (outcomeIndex == NO_ID) {
+                swapOut = noReserves - (yesReserves * noReserves * drawReserves) / ((yesReserves + shareAmountFromSplit) * (drawReserves + shareAmountFromSplit));
+            } else {
+                swapOut = drawReserves - (yesReserves * noReserves * drawReserves) / ((yesReserves + shareAmountFromSplit) * (noReserves + shareAmountFromSplit));
+            }
             sharesToReturn = shareAmountFromSplit + swapOut;
         }
 
@@ -86,12 +99,13 @@ contract VerityAMM is ERC1155Holder, ReentrancyGuard {
 
     /**
      * @dev Sell shares of a specific outcome for collateral.
-     * @param outcomeIndex 0 for NO, 1 for YES.
+     * @param outcomeIndex 0 for NO, 1 for YES, 2 for DRAW.
      * @param shareAmount Amount of shares to sell (18 decimals).
      * @param minCollateral Minimum collateral to receive (6 decimals).
      */
     function sell(uint256 outcomeIndex, uint256 shareAmount, uint256 minCollateral) external nonReentrant {
-        require(outcomeIndex <= 1, "Invalid outcome");
+        bool hasDraw = market.hasDraw();
+        require(outcomeIndex <= (hasDraw ? 2 : 1), "Invalid outcome");
         require(shareAmount > 0, "Amount must be > 0");
 
         uint256 yesReserves = market.balanceOf(address(this), YES_ID);
@@ -102,10 +116,31 @@ contract VerityAMM is ERC1155Holder, ReentrancyGuard {
 
         // 2. Calculate share amount to return from pool (swap)
         uint256 swapOut;
-        if (outcomeIndex == YES_ID) {
-            swapOut = noReserves - (yesReserves * noReserves) / (yesReserves + shareAmount);
+        if (!hasDraw) {
+            if (outcomeIndex == YES_ID) {
+                swapOut = noReserves - (yesReserves * noReserves) / (yesReserves + shareAmount);
+            } else {
+                swapOut = yesReserves - (yesReserves * noReserves) / (noReserves + shareAmount);
+            }
         } else {
-            swapOut = yesReserves - (yesReserves * noReserves) / (noReserves + shareAmount);
+            uint256 drawReserves = market.balanceOf(address(this), DRAW_ID);
+            // Sell YES for NO and DRAW
+            if (outcomeIndex == YES_ID) {
+                // Approximate: we want d such that (Y+s)*(N-d)*(D-d) = Y*N*D
+                // This is hard to solve exactly in Solidity without quadratic formula.
+                // Simplified: Swap YES for a synthetic "pair" of (NO+DRAW)
+                swapOut = noReserves - (yesReserves * noReserves) / (yesReserves + shareAmount);
+                uint256 swapOutDraw = drawReserves - (yesReserves * drawReserves) / (yesReserves + shareAmount);
+                if (swapOutDraw < swapOut) swapOut = swapOutDraw; // Use minimum to ensure we can merge
+            } else if (outcomeIndex == NO_ID) {
+                swapOut = yesReserves - (noReserves * yesReserves) / (noReserves + shareAmount);
+                uint256 swapOutDraw = drawReserves - (noReserves * drawReserves) / (noReserves + shareAmount);
+                if (swapOutDraw < swapOut) swapOut = swapOutDraw;
+            } else {
+                swapOut = yesReserves - (drawReserves * yesReserves) / (drawReserves + shareAmount);
+                uint256 swapOutNo = noReserves - (drawReserves * noReserves) / (drawReserves + shareAmount);
+                if (swapOutNo < swapOut) swapOut = swapOutNo;
+            }
         }
 
         // 3. Merge the "paired" shares back into collateral (6 decimals)
