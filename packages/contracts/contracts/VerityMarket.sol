@@ -1,148 +1,187 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
+import "@openzeppelin/contracts/token/ERC1155/ERC1155.sol";
+import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import "@openzeppelin/contracts/access/Ownable.sol";
 import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 
-contract VerityMarket is ReentrancyGuard {
-    // 0=NO, 1=YES, 2=DRAW, 3=CONFLICT, 4=VOID
-    enum Outcome { NO, YES, DRAW, CONFLICT, VOID }
+/**
+ * @title VerityMarket
+ * @dev A Polymarket-like market using the Conditional Tokens mechanism.
+ * 1 YES share + 1 NO share = 1 Collateral (e.g., USDC).
+ */
+contract VerityMarket is ERC1155, ReentrancyGuard {
+    enum Outcome { UNRESOLVED, NO, YES, DRAW, VOID }
+
+    // Share IDs
+    uint256 public constant NO_ID = 0;
+    uint256 public constant YES_ID = 1;
+    uint256 public constant DRAW_ID = 2;
 
     string public question;
-    string public category;    // e.g., "Sports", "Crypto", "Politics"
-    string public subCategory; // e.g., "Premier League", "Price Action", "Elections"
-    string public topic;       // e.g., "Soccer", "Bitcoin", "USA"
-    string public context;     // e.g., "Arsenal vs Man City", "BTC/USD", "General Election"
     uint256 public deadline;
-    bool public hasDraw;       // If true, 3-way market. If false, 2-way (Yes/No).
-    
-    uint256 public yesPool;
-    uint256 public noPool;
-    uint256 public drawPool;
+    bool public hasDraw;
+    IERC20 public collateralToken;
     
     bool public resolved;
     Outcome public outcome;
-
+    
     address public factory;
     address public treasury;
 
-    mapping(address => uint256) public yesShares;
-    mapping(address => uint256) public noShares;
-    mapping(address => uint256) public drawShares;
-
-    event BetPlaced(address indexed user, uint8 side, uint256 amount);
     event MarketResolved(Outcome outcome);
+    event SharesMinted(address indexed user, uint256 amount);
+    event SharesMerged(address indexed user, uint256 amount);
     event PayoutClaimed(address indexed user, uint256 amount);
 
     constructor(
         string memory _question,
-        string memory _category,
-        string memory _subCategory,
-        string memory _topic,
-        string memory _context,
         uint256 _deadline,
         bool _hasDraw,
+        address _collateralToken,
         address _treasury
-    ) {
+    ) ERC1155("") {
         question = _question;
-        category = _category;
-        subCategory = _subCategory;
-        topic = _topic;
-        context = _context;
         deadline = _deadline;
         hasDraw = _hasDraw;
+        collateralToken = IERC20(_collateralToken);
         factory = msg.sender;
         treasury = _treasury;
     }
 
     /**
-     * @dev Place a bet on a specific side.
-     * @param side 0 for NO, 1 for YES, 2 for DRAW.
+     * @dev Mint YES and NO (and DRAW) shares by depositing collateral.
+     * 1 Collateral (6 decimals) = 1 YES + 1 NO (18 decimals).
      */
-    function placeBet(uint8 side) external payable nonReentrant {
-        require(!resolved, "Market already resolved");
-        require(block.timestamp < deadline, "Betting closed");
-        require(msg.value >= 0.5 ether, "Minimum bet 0.5 FLOW");
-        
+    function mintShares(uint256 collateralAmount) external nonReentrant {
+        require(!resolved, "Market resolved");
+        require(block.timestamp < deadline, "Deadline passed");
+        require(collateralAmount > 0, "Amount must be > 0");
+
+        require(collateralToken.transferFrom(msg.sender, address(this), collateralAmount), "Transfer failed");
+
+        // Scale 6 decimals to 18 decimals for shares
+        uint256 shareAmount = collateralAmount * 10**12;
+
+        uint256[] memory ids;
+        uint256[] memory amounts;
+
         if (hasDraw) {
-            require(side <= 2, "Invalid side for 3-way market");
+            ids = new uint256[](3);
+            amounts = new uint256[](3);
+            ids[0] = NO_ID;
+            ids[1] = YES_ID;
+            ids[2] = DRAW_ID;
+            amounts[0] = shareAmount;
+            amounts[1] = shareAmount;
+            amounts[2] = shareAmount;
         } else {
-            require(side <= 1, "Draw not supported for this market");
+            ids = new uint256[](2);
+            amounts = new uint256[](2);
+            ids[0] = NO_ID;
+            ids[1] = YES_ID;
+            amounts[0] = shareAmount;
+            amounts[1] = shareAmount;
         }
 
-        if (side == 1) {
-            yesShares[msg.sender] += msg.value;
-            yesPool += msg.value;
-        } else if (side == 0) {
-            noShares[msg.sender] += msg.value;
-            noPool += msg.value;
-        } else {
-            drawShares[msg.sender] += msg.value;
-            drawPool += msg.value;
-        }
-
-        emit BetPlaced(msg.sender, side, msg.value);
+        _mintBatch(msg.sender, ids, amounts, "");
+        emit SharesMinted(msg.sender, collateralAmount);
     }
 
-    function resolve(Outcome _outcome) external {
-        require(msg.sender == factory, "Only factory can resolve");
-        require(!resolved, "Market already resolved");
-        require(block.timestamp >= deadline, "Market not ended yet");
-        if (!hasDraw) {
-            require(_outcome != Outcome.DRAW, "Cannot resolve as DRAW for 2-way market");
+    /**
+     * @dev Merge YES and NO (and DRAW) shares back into collateral.
+     * 1 YES + 1 NO (18 decimals) = 1 Collateral (6 decimals).
+     */
+    function mergeShares(uint256 shareAmount) external nonReentrant {
+        require(shareAmount > 0, "Amount must be > 0");
+
+        uint256[] memory ids;
+        uint256[] memory amounts;
+
+        if (hasDraw) {
+            ids = new uint256[](3);
+            amounts = new uint256[](3);
+            ids[0] = NO_ID;
+            ids[1] = YES_ID;
+            ids[2] = DRAW_ID;
+            amounts[0] = shareAmount;
+            amounts[1] = shareAmount;
+            amounts[2] = shareAmount;
+        } else {
+            ids = new uint256[](2);
+            amounts = new uint256[](2);
+            ids[0] = NO_ID;
+            ids[1] = YES_ID;
+            amounts[0] = shareAmount;
+            amounts[1] = shareAmount;
         }
 
+        _burnBatch(msg.sender, ids, amounts);
+        
+        // Scale 18 decimals down to 6 decimals for collateral
+        uint256 collateralAmount = shareAmount / 10**12;
+        require(collateralToken.transfer(msg.sender, collateralAmount), "Transfer failed");
+
+        emit SharesMerged(msg.sender, collateralAmount);
+    }
+
+    /**
+     * @dev Resolve the market. Only factory can call.
+     */
+    function resolve(Outcome _outcome) external {
+        require(msg.sender == factory, "Only factory can resolve");
+        require(!resolved, "Already resolved");
+        require(block.timestamp >= deadline, "Not ended");
+        
         resolved = true;
         outcome = _outcome;
 
         emit MarketResolved(outcome);
-
-        // Fee logic: 1.5% to treasury on successful resolution
-        if (outcome == Outcome.YES || outcome == Outcome.NO || outcome == Outcome.DRAW) {
-            uint256 totalPool = yesPool + noPool + drawPool;
-            uint256 fee = (totalPool * 15) / 1000; // 1.5%
-            payable(treasury).transfer(fee);
-        }
     }
 
-    function getOdds() external view returns (uint256 yesProb, uint256 noProb, uint256 drawProb) {
-        uint256 totalPool = yesPool + noPool + drawPool;
-        if (totalPool == 0) {
-            if (hasDraw) return (3333, 3333, 3334);
-            return (5000, 5000, 0);
-        }
-        yesProb = (yesPool * 10000) / totalPool;
-        noProb = (noPool * 10000) / totalPool;
-        drawProb = (drawPool * 10000) / totalPool;
-    }
-
+    /**
+     * @dev Claim payout for winning shares.
+     * 1 winning share (18 decimals) = 1 Collateral (6 decimals).
+     */
     function redeem() external nonReentrant {
-        require(resolved, "Market not resolved");
-        uint256 payout;
-        uint256 totalPool = yesPool + noPool + drawPool;
-
+        require(resolved, "Not resolved");
+        
+        uint256 sharePayout = 0;
         if (outcome == Outcome.YES) {
-            require(yesShares[msg.sender] > 0, "No winning shares");
-            payout = (yesShares[msg.sender] * totalPool * 985) / (yesPool * 1000);
-            yesShares[msg.sender] = 0;
+            sharePayout = balanceOf(msg.sender, YES_ID);
+            _burn(msg.sender, YES_ID, sharePayout);
         } else if (outcome == Outcome.NO) {
-            require(noShares[msg.sender] > 0, "No winning shares");
-            payout = (noShares[msg.sender] * totalPool * 985) / (noPool * 1000);
-            noShares[msg.sender] = 0;
+            sharePayout = balanceOf(msg.sender, NO_ID);
+            _burn(msg.sender, NO_ID, sharePayout);
         } else if (outcome == Outcome.DRAW) {
-            require(drawShares[msg.sender] > 0, "No winning shares");
-            payout = (drawShares[msg.sender] * totalPool * 985) / (drawPool * 1000);
-            drawShares[msg.sender] = 0;
-        } else if (outcome == Outcome.VOID || outcome == Outcome.CONFLICT) {
-            payout = yesShares[msg.sender] + noShares[msg.sender] + drawShares[msg.sender];
-            yesShares[msg.sender] = 0;
-            noShares[msg.sender] = 0;
-            drawShares[msg.sender] = 0;
-        } else {
-            revert("Invalid outcome");
+            sharePayout = balanceOf(msg.sender, DRAW_ID);
+            _burn(msg.sender, DRAW_ID, sharePayout);
+        } else if (outcome == Outcome.VOID) {
+            uint256 yesBal = balanceOf(msg.sender, YES_ID);
+            uint256 noBal = balanceOf(msg.sender, NO_ID);
+            uint256 drawBal = hasDraw ? balanceOf(msg.sender, DRAW_ID) : 0;
+            
+            uint256 divisor = hasDraw ? 3 : 2;
+            sharePayout = (yesBal + noBal + drawBal) / divisor;
+            
+            _burn(msg.sender, YES_ID, yesBal);
+            _burn(msg.sender, NO_ID, noBal);
+            if (hasDraw) _burn(msg.sender, DRAW_ID, drawBal);
         }
 
-        require(payout > 0, "Nothing to redeem");
-        payable(msg.sender).transfer(payout);
-        emit PayoutClaimed(msg.sender, payout);
+        require(sharePayout > 0, "No payout");
+        
+        // Scale 18 decimals down to 6 decimals for collateral
+        uint256 collateralPayout = sharePayout / 10**12;
+
+        // Fee handling: 1.5% to treasury
+        uint256 fee = (collateralPayout * 15) / 1000;
+        uint256 netPayout = collateralPayout - fee;
+
+        require(collateralToken.transfer(treasury, fee), "Fee transfer failed");
+        require(collateralToken.transfer(msg.sender, netPayout), "Payout transfer failed");
+
+        emit PayoutClaimed(msg.sender, netPayout);
     }
 }

@@ -4,16 +4,27 @@ async function main() {
   const [deployer] = await ethers.getSigners();
   console.log("Deploying contracts with the account:", deployer.address);
 
-  // 1. Deploy VerityTreasury
+  // 1. Deploy MockUSDC (Collateral Token)
+  const MockUSDC = await ethers.getContractFactory("MockUSDC");
+  const usdc = await MockUSDC.deploy();
+  await usdc.waitForDeployment();
+  const usdcAddress = await usdc.getAddress();
+  console.log("MockUSDC deployed to:", usdcAddress);
+
+  // 2. Deploy VerityTreasury
   const VerityTreasury = await ethers.getContractFactory("VerityTreasury");
   const treasury = await VerityTreasury.deploy(deployer.address);
   await treasury.waitForDeployment();
   const treasuryAddress = await treasury.getAddress();
   console.log("VerityTreasury deployed to:", treasuryAddress);
 
-  // 2. Deploy VerityFactory
+  // 3. Deploy VerityFactory
   const VerityFactory = await ethers.getContractFactory("VerityFactory");
-  const factory = await VerityFactory.deploy(treasuryAddress, deployer.address);
+  const factory = await VerityFactory.deploy(
+    treasuryAddress,
+    usdcAddress,
+    deployer.address
+  );
   await factory.waitForDeployment();
   const factoryAddress = await factory.getAddress();
   console.log("VerityFactory deployed to:", factoryAddress);
@@ -31,6 +42,7 @@ async function main() {
   console.log("-------------------");
   console.log("Factory Address:", factoryAddress);
   console.log("Treasury Address:", treasuryAddress);
+  console.log("MockUSDC Address:", usdcAddress);
   console.log("-------------------");
 }
 

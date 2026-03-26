@@ -3,14 +3,16 @@ pragma solidity ^0.8.24;
 
 import "@openzeppelin/contracts/access/Ownable.sol";
 import "./VerityMarket.sol";
+import "./VerityAMM.sol";
 
 contract VerityFactory is Ownable {
     address public treasury;
-    address public workflowRunner; // The authorized address for CRE Workflow execution
+    address public workflowRunner; 
     uint256 public constant MARKET_BOND = 5 ether;
 
     struct MarketRecord {
         address marketAddress;
+        address ammAddress;
         address creator;
         bool resolved;
     }
@@ -18,11 +20,14 @@ contract VerityFactory is Ownable {
     MarketRecord[] public markets;
     mapping(address => uint256) public marketToIndex;
 
-    event MarketCreated(address indexed marketAddress, address indexed creator, string question);
+    address public collateralToken;
+
+    event MarketCreated(address indexed marketAddress, address indexed ammAddress, address indexed creator, string question);
     event MarketResolved(address indexed marketAddress, VerityMarket.Outcome outcome);
 
-    constructor(address _treasury, address initialOwner) Ownable(initialOwner) {
+    constructor(address _treasury, address _collateralToken, address initialOwner) Ownable(initialOwner) {
         treasury = _treasury;
+        collateralToken = _collateralToken;
     }
 
     function setWorkflowRunner(address _workflowRunner) external onlyOwner {
@@ -31,10 +36,10 @@ contract VerityFactory is Ownable {
 
     function createMarket(
         string memory _question,
-        string memory _category,
-        string memory _subCategory,
-        string memory _topic,
-        string memory _context,
+        string memory, // _category
+        string memory, // _subCategory
+        string memory, // _topic
+        string memory, // _context
         uint256 _deadline,
         bool _hasDraw
     ) external payable {
@@ -42,23 +47,23 @@ contract VerityFactory is Ownable {
 
         VerityMarket newMarket = new VerityMarket(
             _question,
-            _category,
-            _subCategory,
-            _topic,
-            _context,
             _deadline,
             _hasDraw,
+            collateralToken,
             treasury
         );
+
+        VerityAMM newAMM = new VerityAMM(address(newMarket), collateralToken);
 
         marketToIndex[address(newMarket)] = markets.length;
         markets.push(MarketRecord({
             marketAddress: address(newMarket),
+            ammAddress: address(newAMM),
             creator: msg.sender,
             resolved: false
         }));
 
-        emit MarketCreated(address(newMarket), msg.sender, _question);
+        emit MarketCreated(address(newMarket), address(newAMM), msg.sender, _question);
     }
 
     function resolveMarket(address _marketAddress, VerityMarket.Outcome _outcome) external {
@@ -78,8 +83,6 @@ contract VerityFactory is Ownable {
             payable(record.creator).transfer(MARKET_BOND);
         } else if (_outcome == VerityMarket.Outcome.VOID) {
             // Voided, return bond
-            payable(record.creator).transfer(MARKET_BOND);
-        } else if (_outcome == VerityMarket.Outcome.CONFLICT) {
             payable(record.creator).transfer(MARKET_BOND);
         }
 
