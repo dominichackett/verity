@@ -52,33 +52,64 @@ async function run() {
   for (let i = 0; i < count; i++) {
     try {
         const [marketAddress, ammAddress, creator, resolvedOnFactory] = await factory.markets(i);
+        
+        if (!ammAddress || ammAddress === ethers.ZeroAddress) {
+          console.log(`⏩ Skipping market ${marketAddress} (No AMM)`);
+          continue;
+        }
+
         const market = new ethers.Contract(marketAddress, MARKET_ABI, provider);
 
         // --- INDEXING LOGIC ---
-        const [
-          question, category, deadline, hasDraw, collateralToken, resolvedOnMarket, outcome
-        ] = await Promise.all([
-          market.question(), market.category(), market.deadline(), 
-          market.hasDraw(), market.collateralToken(),
-          market.resolved(), market.outcome()
-        ]);
+        // Robustly fetch metadata (older contracts might lack 'category')
+        let question = "";
+        let category = "General";
+        let deadline = 0n;
+        let hasDraw = false;
+        let collateralToken = "";
+        let resolvedOnMarket = false;
+        let outcome = 0;
 
-        // Fetch prices from AMM (Simple approximation: yesReserves / (yesReserves + noReserves))
+        try {
+          [question, deadline, hasDraw, collateralToken, resolvedOnMarket, outcome] = await Promise.all([
+            market.question(), market.deadline(), market.hasDraw(), 
+            market.collateralToken(), market.resolved(), market.outcome()
+          ]);
+          
+          // Try to fetch category, fallback if it doesn't exist
+          try {
+            category = await market.category();
+          } catch (e) {
+            console.log(`ℹ️ No category() function on market ${marketAddress}, using default.`);
+          }
+        } catch (e) {
+          console.error(`❌ Fatal error fetching metadata for ${marketAddress}:`, e);
+          continue;
+        }
+
+        // Fetch prices and liquidity from AMM
         let yesPrice = 0.5;
         let noPrice = 0.5;
+        let totalLiquidity = 0;
+
         try {
             const yesReserves = await market.balanceOf(ammAddress, 1);
             const noReserves = await market.balanceOf(ammAddress, 0);
             const total = Number(yesReserves) + Number(noReserves);
             if (total > 0) {
-                yesPrice = Number(noReserves) / total; // Price of YES is NO_reserves / Total_reserves in FPMM
+                yesPrice = Number(noReserves) / total;
                 noPrice = Number(yesReserves) / total;
             }
+
+            // Fetch Total Liquidity (USDC balance of the Market contract)
+            const collateralContract = new ethers.Contract(collateralToken, ["function balanceOf(address) view returns (uint256)"], provider);
+            const balance = await collateralContract.balanceOf(marketAddress);
+            totalLiquidity = Number(ethers.formatUnits(balance, 6)); // USDC has 6 decimals
         } catch (e) {
-            console.log("Could not fetch AMM reserves, using defaults.");
+            console.log("Could not fetch AMM data, using defaults.");
         }
 
-        console.log(`📊 Indexing: ${question} | Category: ${category} | YES: $${yesPrice.toFixed(2)}`);
+        console.log(`📊 Indexing: ${question} | Category: ${category} | Liq: ${totalLiquidity} USDC`);
 
         const { error: upsertError } = await supabase.from("markets").upsert({
           address: marketAddress,
@@ -92,6 +123,7 @@ async function run() {
           collateral_token: collateralToken,
           yes_price: yesPrice,
           no_price: noPrice,
+          total_liquidity_usdc: totalLiquidity,
           status: resolvedOnMarket ? 'resolved' : 'active',
           outcome: Number(outcome)
         }, { onConflict: 'address' });

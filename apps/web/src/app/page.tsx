@@ -38,8 +38,75 @@ export default function Home() {
     type: "success" | "error";
   }>({ show: false, title: "", message: "", type: "success" });
 
+  const [livePrices, setLivePrices] = useState({ yes: 0.5, no: 0.5, draw: 0.33, liquidity: 0 });
+  const [allLivePrices, setAllLivePrices] = useState<Record<string, { yes: number, no: number, draw: number, liquidity: number }>>({});
+
   const showNotify = (title: string, message: string, type: "success" | "error" = "success") => {
     setNotification({ show: true, title, message, type });
+  };
+
+  const fetchAmmPrices = async (market: any = activeMarket) => {
+    if (!market || !signer) return null;
+    try {
+      const marketAbi = ["function balanceOf(address, uint256) view returns (uint256)"];
+      const marketContract = new ethers.Contract(market.address, marketAbi, signer.provider);
+      
+      const yesRes = await marketContract.balanceOf(market.amm_address, 1);
+      const noRes = await marketContract.balanceOf(market.amm_address, 0);
+      
+      let resPrices = { yes: 0.5, no: 0.5, draw: 0, liquidity: 0 };
+      if (!market.has_draw) {
+        const total = Number(yesRes) + Number(noRes);
+        if (total > 0) {
+          resPrices.yes = Number(noRes) / total;
+          resPrices.no = Number(yesRes) / total;
+        }
+      } else {
+        const drawRes = await marketContract.balanceOf(market.amm_address, 2);
+        const rY = Number(yesRes);
+        const rN = Number(noRes);
+        const rD = Number(drawRes);
+        
+        const termY = rN * rD;
+        const termN = rY * rD;
+        const termD = rY * rN;
+        const sum = termY + termN + termD;
+        
+        if (sum > 0) {
+          resPrices.yes = termY / sum;
+          resPrices.no = termN / sum;
+          resPrices.draw = termD / sum;
+        }
+      }
+
+      // Fetch Live Liquidity
+      try {
+        const collateralContract = new ethers.Contract(market.collateral_token, ["function balanceOf(address) view returns (uint256)"], signer.provider);
+        const balance = await collateralContract.balanceOf(market.address);
+        resPrices.liquidity = Number(ethers.formatUnits(balance, 6));
+      } catch (e) {
+        console.warn("Could not fetch live liquidity");
+      }
+
+      return resPrices;
+    } catch (e) {
+      console.error("Error fetching live prices:", e);
+      return null;
+    }
+  };
+
+  const fetchAllPrices = async (activeMarkets: any[]) => {
+    if (!signer || activeMarkets.length === 0) return;
+    const pricePromises = activeMarkets.map(async (m) => {
+      const prices = await fetchAmmPrices(m);
+      return prices ? { address: m.address, prices } : null;
+    });
+    const results = await Promise.all(pricePromises);
+    const newPrices = results.reduce((acc: any, curr: any) => {
+      if (curr) acc[curr.address] = curr.prices;
+      return acc;
+    }, {});
+    setAllLivePrices(prev => ({ ...prev, ...newPrices }));
   };
 
   // Trade State
@@ -76,6 +143,8 @@ export default function Home() {
         console.error("Supabase fetch error:", error);
       } else if (data) {
         setMarkets(data);
+        const active = data.filter(m => m.status !== 'resolved');
+        if (signer) fetchAllPrices(active);
       }
       setLoading(false);
     }
@@ -131,6 +200,8 @@ export default function Home() {
           no: ethers.formatUnits(no, 18),
           draw: ethers.formatUnits(draw, 18)
         });
+        const currentPrices = await fetchAmmPrices(activeMarket);
+        if (currentPrices) setLivePrices(currentPrices);
       } catch (e) {
         console.error("Error fetching positions:", e);
       }
@@ -147,23 +218,30 @@ export default function Home() {
         const erc20Abi = ["function approve(address, uint256) external returns (bool)"];
         const ammContract = new ethers.Contract(activeMarket.amm_address, ammAbi, signer);
         const collateralContract = new ethers.Contract(activeMarket.collateral_token, erc20Abi, signer);
-        const amount = ethers.parseEther(betAmount);
+        // USDC has 6 decimals
+        const amount = ethers.parseUnits(betAmount, 6);
         const approveTx = await collateralContract.approve(activeMarket.amm_address, amount);
         await approveTx.wait();
         const tx = await ammContract.buy(side, amount, 0);
         await tx.wait();
-        showNotify("Shares Purchased", `You have successfully bought ${calculatePayout(side)} shares.`);
+        showNotify("Shares Purchased", `You have successfully bought ${calculateTradeDetails(side).shares} shares.`);
       } else {
         const ammAbi = ["function sell(uint256, uint256, uint256) external"];
         const marketAbi = ["function setApprovalForAll(address, bool) external"];
         const ammContract = new ethers.Contract(activeMarket.amm_address, ammAbi, signer);
         const marketContract = new ethers.Contract(activeMarket.address, marketAbi, signer);
+        // Shares have 18 decimals
         const amount = ethers.parseEther(betAmount);
         const approveTx = await marketContract.setApprovalForAll(activeMarket.amm_address, true);
         await approveTx.wait();
         const tx = await ammContract.sell(side, amount, 0);
         await tx.wait();
         showNotify("Shares Sold", `You have successfully sold your position for USDC.`);
+      }
+      const currentPrices = await fetchAmmPrices(activeMarket);
+      if (currentPrices) {
+        setLivePrices(currentPrices);
+        setAllLivePrices(prev => ({ ...prev, [activeMarket.address]: currentPrices }));
       }
       setShowBetModal(false);
     } catch (error) {
@@ -177,6 +255,12 @@ export default function Home() {
   const handleCreateMarket = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!signer) return;
+
+    if (!newMarket.deadline) {
+      showNotify("Missing Deadline", "Please select a valid end date for the market.", "error");
+      return;
+    }
+
     setIsTxLoading(true);
     try {
       const factoryAbi = [
@@ -214,7 +298,8 @@ export default function Home() {
         const ammContract = new ethers.Contract(ammAddress, ammAbi, signer);
         const collateralContract = new ethers.Contract(collateralTokenAddress, erc20Abi, signer);
         
-        const liquidityAmount = ethers.parseEther(newMarket.initialLiquidity);
+        // USDC has 6 decimals
+        const liquidityAmount = ethers.parseUnits(newMarket.initialLiquidity, 6);
         const approveTx = await collateralContract.approve(ammAddress, liquidityAmount);
         await approveTx.wait();
         
@@ -223,6 +308,16 @@ export default function Home() {
       }
 
       setShowCreateModal(false);
+      setNewMarket({
+        question: "",
+        category: "Sports",
+        subCategory: "",
+        topic: "",
+        context: "",
+        deadline: "",
+        hasDraw: false,
+        initialLiquidity: "100.0"
+      });
       showNotify("Market Created", "Your prediction market has been deployed with initial liquidity.");
     } catch (error) {
       console.error("Creation error:", error);
@@ -232,18 +327,27 @@ export default function Home() {
     }
   };
 
-  const calculatePayout = (side: number) => {
-    if (!activeMarket || !betAmount || parseFloat(betAmount) <= 0) return "0.00";
-    const currentBet = parseFloat(betAmount);
+  const calculateTradeDetails = (side: number) => {
+    if (!activeMarket || !betAmount || parseFloat(betAmount) <= 0) {
+      return { shares: "0.00", payout: "0.00" };
+    }
+    
+    const cost = parseFloat(betAmount);
+    const price = side === 1 ? livePrices.yes : side === 0 ? livePrices.no : livePrices.draw;
     
     if (tradeMode === "buy") {
-      const price = side === 1 ? activeMarket.yes_price : side === 0 ? activeMarket.no_price : activeMarket.draw_price;
-      if (!price || price === 0) return "0.00";
-      return (currentBet / price).toFixed(2);
+      const shares = cost / (price || 0.5);
+      return {
+        shares: shares.toFixed(2),
+        payout: shares.toFixed(2) // 1 Share = 1 USDC payout
+      };
     } else {
-      // Selling: return approximate USDC back
-      const price = side === 1 ? activeMarket.yes_price : side === 0 ? activeMarket.no_price : activeMarket.draw_price;
-      return (currentBet * (price || 0.5)).toFixed(2);
+      // Selling
+      const returnUsdc = cost * (price || 0.5);
+      return {
+        shares: cost.toFixed(2),
+        payout: returnUsdc.toFixed(2)
+      };
     }
   };
 
@@ -295,7 +399,7 @@ export default function Home() {
           </button>
         </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-10">
+        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-10">
           {activeMarkets.map((market) => {
                 // High-Vibrancy Dynamic Themes
                 const themes: any = {
@@ -341,7 +445,7 @@ export default function Home() {
                   <div 
                     key={market.id} 
                     onClick={() => { setActiveMarket(market); setShowBetModal(true); setTradeMode("buy"); }}
-                    className={`group relative ${theme.cardBg} border-2 ${theme.border} rounded-[48px] p-10 hover:bg-white/[0.12] transition-all cursor-pointer overflow-hidden backdrop-blur-2xl hover:-translate-y-2`}
+                    className={`group relative ${theme.cardBg} border-2 ${theme.border} rounded-[48px] p-8 hover:bg-white/[0.12] transition-all cursor-pointer overflow-hidden backdrop-blur-2xl hover:-translate-y-2`}
                   >
                     <div className={`absolute -top-24 -left-24 w-64 h-64 bg-gradient-to-br ${theme.glow} blur-3xl opacity-40 group-hover:opacity-100 transition-opacity duration-700`} />
                     
@@ -351,7 +455,7 @@ export default function Home() {
                           {market.category}
                         </div>
                         <div className="text-[10px] font-black text-white/50 uppercase tracking-widest">
-                          {market.total_liquidity_usdc || "0"} USDC
+                          {(allLivePrices[market.address]?.liquidity ?? market.total_liquidity_usdc ?? 0).toFixed(0)} USDC
                         </div>
                       </div>
 
@@ -359,16 +463,32 @@ export default function Home() {
                         {market.question}
                       </h3>
 
-                      <div className={`mt-auto space-y-5 bg-gradient-to-br ${theme.bg} to-white/[0.02] p-8 rounded-[36px] border ${theme.border} group-hover:border-white/40 transition-all shadow-xl backdrop-blur-md`}>
-                        <div className="flex justify-between items-end">
-                          <div className="space-y-1">
-                            <span className="block text-[10px] font-black text-white/40 uppercase tracking-widest">Price</span>
-                            <span className="block text-4xl font-black text-white">
-                              ${market.yes_price?.toFixed(2) || "0.50"} <span className={`${theme.text} text-sm font-black`}>YES</span>
-                            </span>
+                      <div className={`mt-auto space-y-5 bg-gradient-to-br ${theme.bg} to-white/[0.02] p-5 rounded-[36px] border ${theme.border} group-hover:border-white/40 transition-all shadow-xl backdrop-blur-md`}>
+                        <div className="flex justify-between items-center gap-1">
+                          <div className={`flex ${market.has_draw ? "gap-2" : "gap-6"}`}>
+                            <div className="space-y-1">
+                              <span className="block text-[8px] font-black text-white/40 uppercase tracking-widest">YES</span>
+                              <span className={`block ${market.has_draw ? "text-lg" : "text-2xl"} font-black text-emerald-400`}>
+                                ${(allLivePrices[market.address]?.yes || market.yes_price || 0.50).toFixed(2)}
+                              </span>
+                            </div>
+                            <div className="space-y-1">
+                              <span className="block text-[8px] font-black text-white/40 uppercase tracking-widest">NO</span>
+                              <span className={`block ${market.has_draw ? "text-lg" : "text-2xl"} font-black text-rose-400`}>
+                                ${(allLivePrices[market.address]?.no || market.no_price || 0.50).toFixed(2)}
+                              </span>
+                            </div>
+                            {market.has_draw && (
+                              <div className="space-y-1">
+                                <span className="block text-[8px] font-black text-white/40 uppercase tracking-widest">DRAW</span>
+                                <span className="block text-lg font-black text-amber-400">
+                                  ${(allLivePrices[market.address]?.draw || market.draw_price || 0.33).toFixed(2)}
+                                </span>
+                              </div>
+                            )}
                           </div>
-                          <div className={`w-14 h-14 rounded-2xl ${theme.bg} border ${theme.border} flex items-center justify-center group-hover:scale-110 transition-transform shadow-lg`}>
-                            <ChevronRight className={`w-7 h-7 ${theme.text}`} />
+                          <div className={`shrink-0 w-12 h-12 rounded-2xl ${theme.bg} border ${theme.border} flex items-center justify-center group-hover:scale-110 transition-transform shadow-lg ml-auto`}>
+                            <ChevronRight className={`w-6 h-6 ${theme.text}`} />
                           </div>
                         </div>
                       </div>
@@ -377,6 +497,94 @@ export default function Home() {
                 );
           })}
         </div>
+
+        {resolvedMarkets.length > 0 && (
+          <div className="mt-32">
+            <div className="flex items-center justify-between mb-12">
+              <h2 className="text-3xl font-black tracking-tight text-white/80">Resolved Markets</h2>
+            </div>
+            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-10">
+              {resolvedMarkets.map((market) => {
+                    const themes: any = {
+                      'Crypto': { border: 'border-blue-400/40', bg: 'bg-blue-400/20', cardBg: 'bg-blue-500/[0.06]', glow: 'from-blue-500/20' },
+                      'Sports': { border: 'border-emerald-400/40', bg: 'bg-emerald-400/20', cardBg: 'bg-emerald-500/[0.06]', glow: 'from-emerald-500/20' },
+                      'Politics': { border: 'border-purple-400/40', bg: 'bg-purple-400/20', cardBg: 'bg-purple-500/[0.06]', glow: 'from-purple-500/20' },
+                      'Pop Culture': { border: 'border-pink-400/40', bg: 'bg-pink-400/20', cardBg: 'bg-pink-500/[0.06]', glow: 'from-pink-500/20' },
+                      'Default': { border: 'border-cyan-400/40', bg: 'bg-cyan-400/20', cardBg: 'bg-cyan-500/[0.06]', glow: 'from-cyan-500/20' }
+                    };
+                    const theme = themes[market.category] || themes.Default;
+                    
+                    const outcomes: Record<number, { label: string, color: string }> = {
+                      1: { label: "NO", color: "text-rose-400" },
+                      2: { label: "YES", color: "text-emerald-400" },
+                      3: { label: "DRAW", color: "text-amber-400" },
+                      4: { label: "VOID", color: "text-white/40" }
+                    };
+                    const result = outcomes[market.outcome] || { label: "UNKNOWN", color: "text-white/20" };
+
+                    return (
+                      <div 
+                        key={market.id} 
+                        className={`relative ${theme.cardBg} border-2 ${theme.border} rounded-[48px] p-8 overflow-hidden backdrop-blur-md transition-all group hover:bg-white/[0.08]`}
+                      >
+                        <div className={`absolute -top-24 -left-24 w-64 h-64 bg-gradient-to-br ${theme.glow} to-transparent blur-3xl opacity-30`} />
+                        
+                        <div className="relative z-10 h-full flex flex-col">
+                          <div className="flex items-center justify-between mb-8">
+                            <div className={`px-4 py-1.5 rounded-full ${theme.bg} border ${theme.border} text-[10px] font-black uppercase tracking-widest`}>
+                              {market.category}
+                            </div>
+                            <div className={`text-[10px] font-black uppercase tracking-widest flex items-center gap-2 ${result.color}`}>
+                              <CheckCircle2 className="w-3 h-3" /> WINNER: {result.label}
+                            </div>
+                          </div>
+
+                          <h3 className="text-2xl font-black leading-tight mb-6 min-h-[72px] tracking-tight text-white/90">
+                            {market.question}
+                          </h3>
+
+                          {market.ai_reasoning && (
+                            <div className="mb-8 p-4 bg-white/5 rounded-2xl border border-white/5">
+                              <span className="block text-[8px] font-black text-white/30 uppercase tracking-widest mb-2">AI Resolution Reasoning</span>
+                              <p className="text-[11px] font-bold text-white/50 leading-relaxed italic line-clamp-3 group-hover:line-clamp-none transition-all">
+                                "{market.ai_reasoning}"
+                              </p>
+                            </div>
+                          )}
+
+                          <div className={`mt-auto space-y-5 bg-black/20 p-5 rounded-[36px] border border-white/5`}>
+                            <div className="flex justify-between items-center gap-1">
+                              <div className={`flex ${market.has_draw ? "gap-2" : "gap-6"}`}>
+                                <div className="space-y-1">
+                                  <span className="block text-[8px] font-black text-white/40 uppercase tracking-widest">YES</span>
+                                  <span className={`block ${market.has_draw ? "text-lg" : "text-2xl"} font-black ${market.outcome === 2 ? "text-emerald-400" : "text-white/20"}`}>
+                                    ${(market.yes_price || 0).toFixed(2)}
+                                  </span>
+                                </div>
+                                <div className="space-y-1">
+                                  <span className="block text-[8px] font-black text-white/40 uppercase tracking-widest">NO</span>
+                                  <span className={`block ${market.has_draw ? "text-lg" : "text-2xl"} font-black ${market.outcome === 1 ? "text-rose-400" : "text-white/20"}`}>
+                                    ${(market.no_price || 0).toFixed(2)}
+                                  </span>
+                                </div>
+                                {market.has_draw && (
+                                  <div className="space-y-1">
+                                    <span className="block text-[8px] font-black text-white/40 uppercase tracking-widest">DRAW</span>
+                                    <span className={`block text-lg font-black ${market.outcome === 3 ? "text-amber-400" : "text-white/20"}`}>
+                                      ${(market.draw_price || 0).toFixed(2)}
+                                    </span>
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    );
+              })}
+            </div>
+          </div>
+        )}
       </main>
 
       {/* Bet Modal with Trade Toggle & Positions */}
@@ -399,6 +607,23 @@ export default function Home() {
                 <button onClick={() => setTradeMode("sell")} className={`flex-1 py-3 rounded-xl text-sm font-black transition-all ${tradeMode === "sell" ? "bg-white text-black" : "text-white/40 hover:text-white"}`}>SELL</button>
               </div>
 
+              <div className="bg-white/5 p-6 rounded-3xl border border-white/5 flex justify-around">
+                <div className="text-center">
+                  <span className="block text-[9px] font-black text-white/30 uppercase mb-1">Live YES Price</span>
+                  <span className="font-black text-emerald-400">${livePrices.yes.toFixed(2)}</span>
+                </div>
+                <div className="text-center">
+                  <span className="block text-[9px] font-black text-white/30 uppercase mb-1">Live NO Price</span>
+                  <span className="font-black text-rose-400">${livePrices.no.toFixed(2)}</span>
+                </div>
+                {activeMarket.has_draw && (
+                  <div className="text-center">
+                    <span className="block text-[9px] font-black text-white/30 uppercase mb-1">Live DRAW Price</span>
+                    <span className="font-black text-amber-400">${livePrices.draw.toFixed(2)}</span>
+                  </div>
+                )}
+              </div>
+
               {/* Position Info */}
               <div className="bg-white/5 p-6 rounded-3xl border border-white/5 flex justify-around">
                 <div className="text-center"><span className="block text-[9px] font-black text-white/30 uppercase mb-1">Your YES</span><span className="font-black text-emerald-400">{parseFloat(userPositions.yes).toFixed(1)}</span></div>
@@ -414,16 +639,37 @@ export default function Home() {
               <div className={`grid ${activeMarket.has_draw ? "grid-cols-3" : "grid-cols-2"} gap-4`}>
                 <button onClick={() => handlePlaceBet(1)} disabled={isTxLoading} className="h-24 bg-gradient-to-tr from-emerald-500 to-cyan-500 rounded-3xl font-black text-xl flex flex-col items-center justify-center">
                   <span>YES</span>
-                  <span className="text-xs opacity-60">{tradeMode === "buy" ? `${calculatePayout(1)} USDC Payout` : "Confirm Sell"}</span>
+                  <div className="flex flex-col items-center mt-2">
+                    <span className="text-[11px] opacity-80 uppercase tracking-tight font-bold leading-tight">
+                      {tradeMode === "buy" ? `~${calculateTradeDetails(1).shares} Shares` : `Selling ${calculateTradeDetails(1).shares} Shares`}
+                    </span>
+                    <span className="text-[14px] text-white uppercase tracking-tight font-black leading-tight">
+                      {tradeMode === "buy" ? `Win ~${calculateTradeDetails(1).payout}` : `Get ~${calculateTradeDetails(1).payout} USDC`}
+                    </span>
+                  </div>
                 </button>
                 <button onClick={() => handlePlaceBet(0)} disabled={isTxLoading} className="h-24 bg-gradient-to-tr from-rose-500 to-orange-600 rounded-3xl font-black text-xl flex flex-col items-center justify-center">
                   <span>NO</span>
-                  <span className="text-xs opacity-60">{tradeMode === "buy" ? `${calculatePayout(0)} USDC Payout` : "Confirm Sell"}</span>
+                  <div className="flex flex-col items-center mt-2">
+                    <span className="text-[11px] opacity-80 uppercase tracking-tight font-bold leading-tight">
+                      {tradeMode === "buy" ? `~${calculateTradeDetails(0).shares} Shares` : `Selling ${calculateTradeDetails(0).shares} Shares`}
+                    </span>
+                    <span className="text-[14px] text-white uppercase tracking-tight font-black leading-tight">
+                      {tradeMode === "buy" ? `Win ~${calculateTradeDetails(0).payout}` : `Get ~${calculateTradeDetails(0).payout} USDC`}
+                    </span>
+                  </div>
                 </button>
                 {activeMarket.has_draw && (
                   <button onClick={() => handlePlaceBet(2)} disabled={isTxLoading} className="h-24 bg-gradient-to-tr from-amber-500 to-yellow-600 rounded-3xl font-black text-xl flex flex-col items-center justify-center">
                     <span>DRAW</span>
-                    <span className="text-xs opacity-60">{tradeMode === "buy" ? `${calculatePayout(2)} USDC Payout` : "Confirm Sell"}</span>
+                    <div className="flex flex-col items-center mt-2">
+                      <span className="text-[11px] opacity-80 uppercase tracking-tight font-bold leading-tight">
+                        {tradeMode === "buy" ? `~${calculateTradeDetails(2).shares} Shares` : `Selling ${calculateTradeDetails(2).shares} Shares`}
+                      </span>
+                      <span className="text-[14px] text-white uppercase tracking-tight font-black leading-tight">
+                        {tradeMode === "buy" ? `Win ~${calculateTradeDetails(2).payout}` : `Get ~${calculateTradeDetails(2).payout} USDC`}
+                      </span>
+                    </div>
                   </button>
                 )}
               </div>
@@ -444,13 +690,14 @@ export default function Home() {
               </button>
             </div>
             <form onSubmit={handleCreateMarket} className="space-y-8">
-              <textarea required placeholder="Market question..." className="w-full bg-white/5 border-2 border-white/10 rounded-3xl p-6 h-32 text-xl font-bold" onChange={(e) => setNewMarket({...newMarket, question: e.target.value})} />
+              <textarea required placeholder="Market question..." value={newMarket.question} className="w-full bg-white/5 border-2 border-white/10 rounded-3xl p-6 h-32 text-xl font-bold" onChange={(e) => setNewMarket({...newMarket, question: e.target.value})} />
               <div className="grid grid-cols-2 gap-6">
                 <select className="w-full bg-white/5 border-2 border-white/5 rounded-2xl p-5 font-bold outline-none focus:border-purple-500/50 appearance-none text-white [&>option]:bg-[#0A0A0A] [&>option]:text-white"
+                  value={newMarket.category}
                   onChange={(e) => setNewMarket({...newMarket, category: e.target.value})}>
                   {categories.slice(1).map(c => <option key={c} value={c}>{c}</option>)}
                 </select>
-                <input type="datetime-local" className="bg-white/5 border-2 border-white/10 rounded-2xl p-5" onChange={(e) => setNewMarket({...newMarket, deadline: e.target.value})} />
+                <input type="datetime-local" value={newMarket.deadline} className="bg-white/5 border-2 border-white/10 rounded-2xl p-5" onChange={(e) => setNewMarket({...newMarket, deadline: e.target.value})} />
               </div>
               
               <div className="flex items-center gap-4 bg-white/5 p-6 rounded-3xl border border-white/5">

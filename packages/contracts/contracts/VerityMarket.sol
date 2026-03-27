@@ -20,6 +20,7 @@ contract VerityMarket is ERC1155, ReentrancyGuard {
     uint256 public constant DRAW_ID = 2;
 
     string public question;
+    string public category;
     uint256 public deadline;
     bool public hasDraw;
     IERC20 public collateralToken;
@@ -37,12 +38,14 @@ contract VerityMarket is ERC1155, ReentrancyGuard {
 
     constructor(
         string memory _question,
+        string memory _category,
         uint256 _deadline,
         bool _hasDraw,
         address _collateralToken,
         address _treasury
     ) ERC1155("") {
         question = _question;
+        category = _category;
         deadline = _deadline;
         hasDraw = _hasDraw;
         collateralToken = IERC20(_collateralToken);

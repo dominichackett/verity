@@ -36,7 +36,7 @@ contract VerityFactory is Ownable {
 
     function createMarket(
         string memory _question,
-        string memory, // _category
+        string memory _category,
         string memory, // _subCategory
         string memory, // _topic
         string memory, // _context
@@ -47,6 +47,7 @@ contract VerityFactory is Ownable {
 
         VerityMarket newMarket = new VerityMarket(
             _question,
+            _category,
             _deadline,
             _hasDraw,
             collateralToken,
