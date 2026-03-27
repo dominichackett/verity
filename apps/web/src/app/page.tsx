@@ -13,7 +13,8 @@ import {
   Award,
   CircleDot,
   X,
-  CheckCircle2
+  CheckCircle2,
+  Clock
 } from "lucide-react";
 
 const FACTORY_ADDRESS = process.env.NEXT_PUBLIC_FACTORY_ADDRESS || "";
@@ -459,9 +460,17 @@ export default function Home() {
                         </div>
                       </div>
 
-                      <h3 className="text-2xl font-black leading-tight mb-10 min-h-[72px] tracking-tight text-white drop-shadow-md">
+                      <h3 className="text-2xl font-black leading-tight mb-6 min-h-[72px] tracking-tight text-white drop-shadow-md">
                         {market.question}
                       </h3>
+
+                      <div className="flex items-center gap-2.5 mb-8 text-white bg-white/10 w-fit px-4 py-2 rounded-2xl border border-white/10 shadow-lg backdrop-blur-sm">
+                        <Clock className="w-3.5 h-3.5 text-cyan-400" />
+                        <span className="text-[10px] font-black uppercase tracking-widest">
+                          Ends: {new Date(market.deadline).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
+                          {new Date(market.deadline) < new Date() && <span className="text-rose-400 ml-2 font-black">(Expired)</span>}
+                        </span>
+                      </div>
 
                       <div className={`mt-auto space-y-5 bg-gradient-to-br ${theme.bg} to-white/[0.02] p-5 rounded-[36px] border ${theme.border} group-hover:border-white/40 transition-all shadow-xl backdrop-blur-md`}>
                         <div className="flex justify-between items-center gap-1">
