@@ -24,6 +24,7 @@ export default function Home() {
   const [markets, setMarkets] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [selectedCategory, setSelectedCategory] = useState("All");
+  const [userTrades, setUserTrades] = useState<any[]>([]);
   
   // Modal States
   const [showBetModal, setShowBetModal] = useState(false);
@@ -165,6 +166,38 @@ export default function Home() {
   }, [selectedCategory, account, signer]);
 
   useEffect(() => {
+    if (!account) return;
+
+    async function fetchTrades() {
+      const { data, error } = await supabase
+        .from("trades")
+        .select(`
+          *,
+          markets (
+            question
+          )
+        `)
+        .eq("user_address", account)
+        .order("created_at", { ascending: false });
+
+      if (data) setUserTrades(data);
+    }
+
+    fetchTrades();
+
+    const channel = supabase
+      .channel("trades-realtime")
+      .on("postgres_changes", { event: "INSERT", schema: "public", table: "trades", filter: `user_address=eq.${account}` }, (payload) => {
+        fetchTrades();
+      })
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [account]);
+
+  useEffect(() => {
     async function fetchBalance() {
       if (account && signer) {
         try {
@@ -225,6 +258,20 @@ export default function Home() {
         await approveTx.wait();
         const tx = await ammContract.buy(side, amount, 0);
         await tx.wait();
+
+        const tradeValue = parseFloat(betAmount);
+
+        // Record Trade in DB
+        await supabase.from("trades").insert({
+          market_address: activeMarket.address,
+          user_address: account,
+          type: "BUY",
+          outcome_index: side,
+          collateral_amount: tradeValue,
+          share_amount: parseFloat(calculateTradeDetails(side).shares),
+          tx_hash: tx.hash
+        });
+
         showNotify("Shares Purchased", `You have successfully bought ${calculateTradeDetails(side).shares} shares.`);
       } else {
         const ammAbi = ["function sell(uint256, uint256, uint256) external"];
@@ -237,6 +284,18 @@ export default function Home() {
         await approveTx.wait();
         const tx = await ammContract.sell(side, amount, 0);
         await tx.wait();
+
+        // Record Trade in DB
+        await supabase.from("trades").insert({
+          market_address: activeMarket.address,
+          user_address: account,
+          type: "SELL",
+          outcome_index: side,
+          collateral_amount: parseFloat(calculateTradeDetails(side).payout),
+          share_amount: parseFloat(betAmount),
+          tx_hash: tx.hash
+        });
+
         showNotify("Shares Sold", `You have successfully sold your position for USDC.`);
       }
       const currentPrices = await fetchAmmPrices(activeMarket);
@@ -323,6 +382,43 @@ export default function Home() {
     } catch (error) {
       console.error("Creation error:", error);
       showNotify("Creation Failed", "There was an error deploying your market to the network.", "error");
+    } finally {
+      setIsTxLoading(false);
+    }
+  };
+
+  const handleRedeem = async (market: any) => {
+    if (!signer || !market) return;
+    setIsTxLoading(true);
+    try {
+      const marketAbi = ["function redeem() external"];
+      const marketContract = new ethers.Contract(market.address, marketAbi, signer);
+      
+      const tx = await marketContract.redeem();
+      showNotify("Claiming Payout", "Transaction submitted to the blockchain...");
+      const receipt = await tx.wait();
+
+      // Find the PayoutClaimed event to get the exact amount
+      const amount = 0; // Fallback
+
+      await supabase.from("trades").insert({
+        market_address: market.address,
+        user_address: account,
+        type: "CLAIM",
+        outcome_index: market.outcome, // The winning outcome
+        collateral_amount: 0, // We could fetch this from receipt if needed
+        share_amount: 0,
+        tx_hash: tx.hash
+      });
+      
+      showNotify("Payout Claimed", "Your winnings (minus fee) have been transferred to your wallet.");
+    } catch (error: any) {
+      console.error("Redeem error:", error);
+      if (error.message.includes("No payout")) {
+        showNotify("No Payout", "You don't have any winning shares in this market.", "error");
+      } else {
+        showNotify("Claim Failed", "There was an error claiming your payout.", "error");
+      }
     } finally {
       setIsTxLoading(false);
     }
@@ -585,12 +681,83 @@ export default function Home() {
                                   </div>
                                 )}
                               </div>
+                              <button 
+                                onClick={(e) => { e.stopPropagation(); handleRedeem(market); }}
+                                disabled={isTxLoading}
+                                className={`shrink-0 h-12 px-6 rounded-2xl bg-white text-black font-black text-[10px] uppercase tracking-widest hover:bg-white/90 transition-all shadow-lg ml-auto disabled:opacity-50`}
+                              >
+                                {isTxLoading ? "..." : "Claim Payout"}
+                              </button>
                             </div>
                           </div>
                         </div>
                       </div>
                     );
               })}
+            </div>
+          </div>
+        )}
+
+        {account && (
+          <div className="mt-32">
+            <h2 className="text-3xl font-black tracking-tight text-white/80 mb-12">Activity History</h2>
+            <div className="bg-white/5 border border-white/10 rounded-[48px] overflow-hidden backdrop-blur-md">
+              {userTrades.length > 0 ? (
+                <table className="w-full text-left">
+                  <thead>
+                    <tr className="border-b border-white/10 bg-white/5">
+                      <th className="px-8 py-6 text-[10px] font-black uppercase tracking-widest text-white/30">Market</th>
+                      <th className="px-8 py-6 text-[10px] font-black uppercase tracking-widest text-white/30">Action</th>
+                      <th className="px-8 py-6 text-[10px] font-black uppercase tracking-widest text-white/30">Outcome</th>
+                      <th className="px-8 py-6 text-[10px] font-black uppercase tracking-widest text-white/30">Value</th>
+                      <th className="px-8 py-6 text-[10px] font-black uppercase tracking-widest text-white/30">TX</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-white/5">
+                    {userTrades.map((trade) => (
+                      <tr key={trade.id} className="hover:bg-white/5 transition-colors group">
+                        <td className="px-8 py-6">
+                          <span className="font-bold text-sm text-white/70 line-clamp-1">
+                            {trade.markets?.question || `Market ${trade.market_address.slice(0,6)}...`}
+                          </span>
+                        </td>
+                        <td className="px-8 py-6">
+                          <span className={`px-3 py-1 rounded-full text-[9px] font-black tracking-widest ${
+                            trade.type === 'BUY' ? 'bg-emerald-500/20 text-emerald-400' : 
+                            trade.type === 'SELL' ? 'bg-rose-500/20 text-rose-400' : 
+                            'bg-cyan-500/20 text-cyan-400'
+                          }`}>
+                            {trade.type}
+                          </span>
+                        </td>
+                        <td className="px-8 py-6">
+                          <span className="font-black text-[10px] text-white/40 tracking-widest">
+                            {trade.outcome_index === 1 ? "YES" : trade.outcome_index === 0 ? "NO" : "DRAW"}
+                          </span>
+                        </td>
+                        <td className="px-8 py-6 font-black text-sm">
+                          {trade.collateral_amount.toFixed(1)} USDC
+                        </td>
+                        <td className="px-8 py-6">
+                          <a 
+                            href={`https://evm-testnet.flowscan.io/tx/${trade.tx_hash}`} 
+                            target="_blank" 
+                            rel="noreferrer"
+                            className="w-10 h-10 bg-white/5 rounded-xl flex items-center justify-center hover:bg-white/20 transition-all text-white/30 hover:text-cyan-400"
+                          >
+                            <Activity className="w-4 h-4" />
+                          </a>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              ) : (
+                <div className="p-20 text-center">
+                  <Activity className="w-12 h-12 text-white/10 mx-auto mb-6" />
+                  <p className="text-white/30 font-black uppercase tracking-widest text-sm">No recent activity detected</p>
+                </div>
+              )}
             </div>
           </div>
         )}
