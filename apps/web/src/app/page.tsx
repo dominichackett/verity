@@ -25,6 +25,7 @@ export default function Home() {
   const [loading, setLoading] = useState(true);
   const [selectedCategory, setSelectedCategory] = useState("All");
   const [userTrades, setUserTrades] = useState<any[]>([]);
+  const [resolvedBalances, setResolvedBalances] = useState<Record<string, string>>({});
   
   // Modal States
   const [showBetModal, setShowBetModal] = useState(false);
@@ -169,26 +170,58 @@ export default function Home() {
     if (!account) return;
 
     async function fetchTrades() {
-      const { data, error } = await supabase
+      if (!account) return;
+      console.log("🔍 Fetching trades for account:", account);
+      
+      // First get the trades
+      const { data: tradesData, error: tradesError } = await supabase
         .from("trades")
-        .select(`
-          *,
-          markets (
-            question
-          )
-        `)
-        .eq("user_address", account)
+        .select("*")
+        .ilike("user_address", account)
         .order("created_at", { ascending: false });
 
-      if (data) setUserTrades(data);
+      if (tradesError) {
+        console.error("❌ Supabase error fetching trades:", tradesError);
+        return;
+      }
+
+      console.log("📊 Raw trades from DB:", tradesData?.length || 0, tradesData);
+
+      if (tradesData && tradesData.length > 0) {
+        const marketAddresses = [...new Set(tradesData.map(t => t.market_address))];
+        const { data: marketsData, error: marketsError } = await supabase
+          .from("markets")
+          .select("address, question")
+          .in("address", marketAddresses);
+
+        if (marketsError) console.error("❌ Error fetching market names for trades:", marketsError);
+
+        const marketMap = new Map(marketsData?.map(m => [m.address.toLowerCase(), m.question]) || []);
+        
+        const tradesWithMarkets = tradesData.map(t => ({
+          ...t,
+          markets: {
+            question: marketMap.get(t.market_address.toLowerCase()) || `Market ${t.market_address.slice(0, 6)}...`
+          }
+        }));
+
+        console.log("✅ Setting userTrades state with:", tradesWithMarkets);
+        setUserTrades(tradesWithMarkets);
+      } else {
+        console.log("ℹ️ No trades found for this address in the 'trades' table.");
+        setUserTrades([]);
+      }
     }
 
     fetchTrades();
 
     const channel = supabase
       .channel("trades-realtime")
-      .on("postgres_changes", { event: "INSERT", schema: "public", table: "trades", filter: `user_address=eq.${account}` }, (payload) => {
-        fetchTrades();
+      .on("postgres_changes", { event: "INSERT", schema: "public", table: "trades" }, (payload) => {
+        // If the new trade belongs to the user, refresh
+        if (payload.new && payload.new.user_address.toLowerCase() === account.toLowerCase()) {
+          fetchTrades();
+        }
       })
       .subscribe();
 
@@ -196,6 +229,38 @@ export default function Home() {
       supabase.removeChannel(channel);
     };
   }, [account]);
+
+  useEffect(() => {
+    async function fetchResolvedBalances() {
+      if (!account || !signer || resolvedMarkets.length === 0) return;
+      
+      const balances: Record<string, string> = {};
+      const marketAbi = ["function balanceOf(address, uint256) view returns (uint256)"];
+      
+      const promises = resolvedMarkets.map(async (market) => {
+        try {
+          const contract = new ethers.Contract(market.address, marketAbi, signer.provider);
+          // Outcome: 1=NO, 2=YES, 3=DRAW
+          let outcomeId = -1;
+          if (market.outcome === 1) outcomeId = 0;
+          else if (market.outcome === 2) outcomeId = 1;
+          else if (market.outcome === 3) outcomeId = 2;
+
+          if (outcomeId !== -1) {
+            const bal = await contract.balanceOf(account, outcomeId);
+            balances[market.address] = ethers.formatUnits(bal, 18);
+          }
+        } catch (e) {
+          console.error(`Error fetching balance for ${market.address}:`, e);
+        }
+      });
+
+      await Promise.all(promises);
+      setResolvedBalances(balances);
+    }
+
+    fetchResolvedBalances();
+  }, [account, signer, markets]);
 
   useEffect(() => {
     async function fetchBalance() {
@@ -391,29 +456,47 @@ export default function Home() {
     if (!signer || !market) return;
     setIsTxLoading(true);
     try {
-      const marketAbi = ["function redeem() external"];
+      const marketAbi = [
+        "function redeem() external",
+        "event PayoutClaimed(address indexed user, uint256 amount)"
+      ];
       const marketContract = new ethers.Contract(market.address, marketAbi, signer);
-      
+
       const tx = await marketContract.redeem();
       showNotify("Claiming Payout", "Transaction submitted to the blockchain...");
       const receipt = await tx.wait();
 
       // Find the PayoutClaimed event to get the exact amount
-      const amount = 0; // Fallback
+      let payoutAmount = 0;
+      const log = receipt.logs.find((l: any) => {
+        try {
+          return marketContract.interface.parseLog(l)?.name === "PayoutClaimed";
+        } catch (e) {
+          return false;
+        }
+      });
+
+      if (log) {
+        const parsed = marketContract.interface.parseLog(log);
+        // Collateral (USDC) has 6 decimals
+        payoutAmount = parseFloat(ethers.formatUnits(parsed?.args[1], 6));
+      } else {
+        // Fallback to the balance we knew
+        payoutAmount = parseFloat(resolvedBalances[market.address] || "0") * 0.985; // Est. minus 1.5% fee
+      }
 
       await supabase.from("trades").insert({
         market_address: market.address,
         user_address: account,
         type: "CLAIM",
-        outcome_index: market.outcome, // The winning outcome
-        collateral_amount: 0, // We could fetch this from receipt if needed
-        share_amount: 0,
+        outcome_index: market.outcome - 1, 
+        collateral_amount: payoutAmount,
+        share_amount: parseFloat(resolvedBalances[market.address] || "0"),
         tx_hash: tx.hash
       });
-      
-      showNotify("Payout Claimed", "Your winnings (minus fee) have been transferred to your wallet.");
-    } catch (error: any) {
-      console.error("Redeem error:", error);
+
+      showNotify("Payout Claimed", `Successfully claimed ${payoutAmount.toFixed(2)} USDC.`);
+    } catch (error: any) {      console.error("Redeem error:", error);
       if (error.message.includes("No payout")) {
         showNotify("No Payout", "You don't have any winning shares in this market.", "error");
       } else {
@@ -657,38 +740,44 @@ export default function Home() {
                             </div>
                           )}
 
-                          <div className={`mt-auto space-y-5 bg-black/20 p-5 rounded-[36px] border border-white/5`}>
-                            <div className="flex justify-between items-center gap-1">
-                              <div className={`flex ${market.has_draw ? "gap-2" : "gap-6"}`}>
-                                <div className="space-y-1">
-                                  <span className="block text-[8px] font-black text-white/40 uppercase tracking-widest">YES</span>
-                                  <span className={`block ${market.has_draw ? "text-lg" : "text-2xl"} font-black ${market.outcome === 2 ? "text-emerald-400" : "text-white/20"}`}>
-                                    ${(market.yes_price || 0).toFixed(2)}
-                                  </span>
-                                </div>
-                                <div className="space-y-1">
-                                  <span className="block text-[8px] font-black text-white/40 uppercase tracking-widest">NO</span>
-                                  <span className={`block ${market.has_draw ? "text-lg" : "text-2xl"} font-black ${market.outcome === 1 ? "text-rose-400" : "text-white/20"}`}>
-                                    ${(market.no_price || 0).toFixed(2)}
-                                  </span>
-                                </div>
-                                {market.has_draw && (
-                                  <div className="space-y-1">
-                                    <span className="block text-[8px] font-black text-white/40 uppercase tracking-widest">DRAW</span>
-                                    <span className={`block text-lg font-black ${market.outcome === 3 ? "text-amber-400" : "text-white/20"}`}>
-                                      ${(market.draw_price || 0).toFixed(2)}
-                                    </span>
-                                  </div>
-                                )}
+                          <div className={`mt-auto space-y-4 bg-black/20 p-5 rounded-[36px] border border-white/5`}>
+                            <div className="flex justify-around items-center">
+                              <div className="space-y-1 text-center">
+                                <span className="block text-[8px] font-black text-white/40 uppercase tracking-widest">YES</span>
+                                <span className={`block ${market.has_draw ? "text-lg" : "text-2xl"} font-black ${market.outcome === 2 ? "text-emerald-400" : "text-white/20"}`}>
+                                  ${(market.yes_price || 0).toFixed(2)}
+                                </span>
                               </div>
-                              <button 
-                                onClick={(e) => { e.stopPropagation(); handleRedeem(market); }}
-                                disabled={isTxLoading}
-                                className={`shrink-0 h-12 px-6 rounded-2xl bg-white text-black font-black text-[10px] uppercase tracking-widest hover:bg-white/90 transition-all shadow-lg ml-auto disabled:opacity-50`}
-                              >
-                                {isTxLoading ? "..." : "Claim Payout"}
-                              </button>
+                              <div className="space-y-1 text-center">
+                                <span className="block text-[8px] font-black text-white/40 uppercase tracking-widest">NO</span>
+                                <span className={`block ${market.has_draw ? "text-lg" : "text-2xl"} font-black ${market.outcome === 1 ? "text-rose-400" : "text-white/20"}`}>
+                                  ${(market.no_price || 0).toFixed(2)}
+                                </span>
+                              </div>
+                              {market.has_draw && (
+                                <div className="space-y-1 text-center">
+                                  <span className="block text-[8px] font-black text-white/40 uppercase tracking-widest">DRAW</span>
+                                  <span className={`block text-lg font-black ${market.outcome === 3 ? "text-amber-400" : "text-white/20"}`}>
+                                    ${(market.draw_price || 0).toFixed(2)}
+                                  </span>
+                                </div>
+                              )}
                             </div>
+                            
+                            <button 
+                              onClick={(e) => { e.stopPropagation(); handleRedeem(market); }}
+                              disabled={isTxLoading || !resolvedBalances[market.address] || parseFloat(resolvedBalances[market.address]) === 0}
+                              className={`w-full h-14 rounded-2xl font-black text-[11px] uppercase tracking-widest transition-all shadow-lg ${
+                                resolvedBalances[market.address] && parseFloat(resolvedBalances[market.address]) > 0
+                                ? "bg-white/20 text-white border border-white/50 hover:bg-white/30" 
+                                : "bg-white/5 text-white border border-white/10 opacity-30 cursor-not-allowed"
+                              }`}
+                            >
+                              {isTxLoading ? "Processing..." : 
+                               resolvedBalances[market.address] && parseFloat(resolvedBalances[market.address]) > 0
+                               ? `Claim ${parseFloat(resolvedBalances[market.address]).toFixed(1)} USDC` 
+                               : "No Payout Available"}
+                            </button>
                           </div>
                         </div>
                       </div>
@@ -709,6 +798,7 @@ export default function Home() {
                       <th className="px-8 py-6 text-[10px] font-black uppercase tracking-widest text-white/30">Market</th>
                       <th className="px-8 py-6 text-[10px] font-black uppercase tracking-widest text-white/30">Action</th>
                       <th className="px-8 py-6 text-[10px] font-black uppercase tracking-widest text-white/30">Outcome</th>
+                      <th className="px-8 py-6 text-[10px] font-black uppercase tracking-widest text-white/30">Shares</th>
                       <th className="px-8 py-6 text-[10px] font-black uppercase tracking-widest text-white/30">Value</th>
                       <th className="px-8 py-6 text-[10px] font-black uppercase tracking-widest text-white/30">TX</th>
                     </tr>
@@ -735,7 +825,10 @@ export default function Home() {
                             {trade.outcome_index === 1 ? "YES" : trade.outcome_index === 0 ? "NO" : "DRAW"}
                           </span>
                         </td>
-                        <td className="px-8 py-6 font-black text-sm">
+                        <td className="px-8 py-6 font-black text-sm text-white/60">
+                          {trade.share_amount.toFixed(1)}
+                        </td>
+                        <td className="px-8 py-6 font-black text-sm text-white/90">
                           {trade.collateral_amount.toFixed(1)} USDC
                         </td>
                         <td className="px-8 py-6">
