@@ -4,6 +4,7 @@ import React, { useEffect, useState } from "react";
 import { supabase } from "@/lib/supabase";
 import { ethers } from "ethers";
 import { useWeb3 } from "@/hooks/useWeb3";
+import Link from "next/link";
 import { 
   TrendingUp, 
   Plus, 
@@ -24,7 +25,6 @@ export default function Home() {
   const [markets, setMarkets] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [selectedCategory, setSelectedCategory] = useState("All");
-  const [userTrades, setUserTrades] = useState<any[]>([]);
   const [resolvedBalances, setResolvedBalances] = useState<Record<string, string>>({});
   
   // Modal States
@@ -165,70 +165,6 @@ export default function Home() {
       supabase.removeChannel(channel);
     };
   }, [selectedCategory, account, signer]);
-
-  useEffect(() => {
-    if (!account) return;
-
-    async function fetchTrades() {
-      if (!account) return;
-      console.log("🔍 Fetching trades for account:", account);
-      
-      // First get the trades
-      const { data: tradesData, error: tradesError } = await supabase
-        .from("trades")
-        .select("*")
-        .ilike("user_address", account)
-        .order("created_at", { ascending: false });
-
-      if (tradesError) {
-        console.error("❌ Supabase error fetching trades:", tradesError);
-        return;
-      }
-
-      console.log("📊 Raw trades from DB:", tradesData?.length || 0, tradesData);
-
-      if (tradesData && tradesData.length > 0) {
-        const marketAddresses = [...new Set(tradesData.map(t => t.market_address))];
-        const { data: marketsData, error: marketsError } = await supabase
-          .from("markets")
-          .select("address, question")
-          .in("address", marketAddresses);
-
-        if (marketsError) console.error("❌ Error fetching market names for trades:", marketsError);
-
-        const marketMap = new Map(marketsData?.map(m => [m.address.toLowerCase(), m.question]) || []);
-        
-        const tradesWithMarkets = tradesData.map(t => ({
-          ...t,
-          markets: {
-            question: marketMap.get(t.market_address.toLowerCase()) || `Market ${t.market_address.slice(0, 6)}...`
-          }
-        }));
-
-        console.log("✅ Setting userTrades state with:", tradesWithMarkets);
-        setUserTrades(tradesWithMarkets);
-      } else {
-        console.log("ℹ️ No trades found for this address in the 'trades' table.");
-        setUserTrades([]);
-      }
-    }
-
-    fetchTrades();
-
-    const channel = supabase
-      .channel("trades-realtime")
-      .on("postgres_changes", { event: "INSERT", schema: "public", table: "trades" }, (payload) => {
-        // If the new trade belongs to the user, refresh
-        if (payload.new && payload.new.user_address.toLowerCase() === account.toLowerCase()) {
-          fetchTrades();
-        }
-      })
-      .subscribe();
-
-    return () => {
-      supabase.removeChannel(channel);
-    };
-  }, [account]);
 
   useEffect(() => {
     async function fetchResolvedBalances() {
@@ -549,10 +485,13 @@ export default function Home() {
             </div>
             <span className="text-2xl font-black tracking-tighter">VERITY</span>
           </div>
-          <button onClick={connectWallet} className="flex items-center gap-2 bg-white/10 border border-white/10 px-6 py-3 rounded-2xl">
-            <Wallet className="w-4 h-4 text-cyan-400" />
-            <span className="text-sm font-bold">{account ? `${account.slice(0, 6)}...${account.slice(-4)}` : "Connect Wallet"}</span>
-          </button>
+          <div className="flex items-center gap-4">
+            <Link href="/history" className="text-sm font-black text-white/40 hover:text-white uppercase tracking-widest transition-colors mr-6">My History</Link>
+            <button onClick={connectWallet} className="flex items-center gap-2 bg-white/10 border border-white/10 px-6 py-3 rounded-2xl">
+              <Wallet className="w-4 h-4 text-cyan-400" />
+              <span className="text-sm font-bold">{account ? `${account.slice(0, 6)}...${account.slice(-4)}` : "Connect Wallet"}</span>
+            </button>
+          </div>
         </div>
       </nav>
 
@@ -783,74 +722,6 @@ export default function Home() {
                       </div>
                     );
               })}
-            </div>
-          </div>
-        )}
-
-        {account && (
-          <div className="mt-32">
-            <h2 className="text-3xl font-black tracking-tight text-white/80 mb-12">Activity History</h2>
-            <div className="bg-white/5 border border-white/10 rounded-[48px] overflow-hidden backdrop-blur-md">
-              {userTrades.length > 0 ? (
-                <table className="w-full text-left">
-                  <thead>
-                    <tr className="border-b border-white/10 bg-white/5">
-                      <th className="px-8 py-6 text-[10px] font-black uppercase tracking-widest text-white/30">Market</th>
-                      <th className="px-8 py-6 text-[10px] font-black uppercase tracking-widest text-white/30">Action</th>
-                      <th className="px-8 py-6 text-[10px] font-black uppercase tracking-widest text-white/30">Outcome</th>
-                      <th className="px-8 py-6 text-[10px] font-black uppercase tracking-widest text-white/30">Shares</th>
-                      <th className="px-8 py-6 text-[10px] font-black uppercase tracking-widest text-white/30">Value</th>
-                      <th className="px-8 py-6 text-[10px] font-black uppercase tracking-widest text-white/30">TX</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-white/5">
-                    {userTrades.map((trade) => (
-                      <tr key={trade.id} className="hover:bg-white/5 transition-colors group">
-                        <td className="px-8 py-6">
-                          <span className="font-bold text-sm text-white/70 line-clamp-1">
-                            {trade.markets?.question || `Market ${trade.market_address.slice(0,6)}...`}
-                          </span>
-                        </td>
-                        <td className="px-8 py-6">
-                          <span className={`px-3 py-1 rounded-full text-[9px] font-black tracking-widest ${
-                            trade.type === 'BUY' ? 'bg-emerald-500/20 text-emerald-400' : 
-                            trade.type === 'SELL' ? 'bg-rose-500/20 text-rose-400' : 
-                            'bg-cyan-500/20 text-cyan-400'
-                          }`}>
-                            {trade.type}
-                          </span>
-                        </td>
-                        <td className="px-8 py-6">
-                          <span className="font-black text-[10px] text-white/40 tracking-widest">
-                            {trade.outcome_index === 1 ? "YES" : trade.outcome_index === 0 ? "NO" : "DRAW"}
-                          </span>
-                        </td>
-                        <td className="px-8 py-6 font-black text-sm text-white/60">
-                          {trade.share_amount.toFixed(1)}
-                        </td>
-                        <td className="px-8 py-6 font-black text-sm text-white/90">
-                          {trade.collateral_amount.toFixed(1)} USDC
-                        </td>
-                        <td className="px-8 py-6">
-                          <a 
-                            href={`https://evm-testnet.flowscan.io/tx/${trade.tx_hash}`} 
-                            target="_blank" 
-                            rel="noreferrer"
-                            className="w-10 h-10 bg-white/5 rounded-xl flex items-center justify-center hover:bg-white/20 transition-all text-white/30 hover:text-cyan-400"
-                          >
-                            <Activity className="w-4 h-4" />
-                          </a>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              ) : (
-                <div className="p-20 text-center">
-                  <Activity className="w-12 h-12 text-white/10 mx-auto mb-6" />
-                  <p className="text-white/30 font-black uppercase tracking-widest text-sm">No recent activity detected</p>
-                </div>
-              )}
             </div>
           </div>
         )}

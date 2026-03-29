@@ -56,13 +56,50 @@ export function useWeb3() {
   };
 
   useEffect(() => {
+    const autoConnect = async () => {
+      if (typeof window.ethereum !== "undefined") {
+        try {
+          const provider = new ethers.BrowserProvider(window.ethereum);
+          const accounts = await provider.listAccounts();
+          
+          if (accounts.length > 0) {
+            const currentSigner = await provider.getSigner();
+            setAccount(accounts[0].address);
+            setSigner(currentSigner);
+            checkNetwork(provider);
+          }
+        } catch (error) {
+          console.error("Auto-connect error:", error);
+        }
+      }
+    };
+
+    autoConnect();
+
     if (typeof window.ethereum !== "undefined") {
-      window.ethereum.on("accountsChanged", (accounts: string[]) => {
-        setAccount(accounts[0] || null);
-      });
-      window.ethereum.on("chainChanged", () => {
+      const handleAccountsChanged = async (accounts: string[]) => {
+        if (accounts.length > 0) {
+          const provider = new ethers.BrowserProvider(window.ethereum);
+          const currentSigner = await provider.getSigner();
+          setAccount(accounts[0]);
+          setSigner(currentSigner);
+        } else {
+          setAccount(null);
+          setSigner(null);
+        }
+      };
+
+      const handleChainChanged = () => {
         window.location.reload();
-      });
+      };
+
+      window.ethereum.on("accountsChanged", handleAccountsChanged);
+      window.ethereum.on("chainChanged", handleChainChanged);
+
+      return () => {
+        window.ethereum.removeListener("accountsChanged", handleAccountsChanged);
+        window.ethereum.removeListener("chainChanged", handleChainChanged);
+      };
     }
   }, []);
 
