@@ -1,6 +1,15 @@
 # Verity - Prediction Market on Flow
 
-Verity is a decentralized prediction market platform built on **Flow EVM**. It leverages the **Polymarket mechanism** (Conditional Tokens) for efficient share creation and trading, combined with **AI-powered automated resolution**.
+Verity is a next-generation decentralized prediction market platform built on **Flow EVM**. It leverages the **Polymarket mechanism** (Conditional Tokens) for efficient share creation and trading, combined with **Autonomous AI Resolution** powered by Google Gemini and Google Search.
+
+## 🌟 Overview
+
+Verity is a truly universal prediction market. While traditional platforms rely on centralized admins or slow human oracles, Verity uses **Google Gemini 1.5 Pro** with **Google Search grounding** to resolve any verifiable event on the web. 
+
+It is a community-first platform where:
+- **Permissionless Creation:** Any user can deploy a market for any topic.
+- **Community Liquidity:** Users can profit from both making accurate predictions (trading) or providing market liquidity (LP).
+- **Flow EVM Native:** Built on Flow's high-performance EVM for sub-second finality and near-zero fees.
 
 ## 🏗️ Architecture
 
