@@ -4,7 +4,7 @@ Verity is a next-generation decentralized prediction market platform built on **
 
 ## 🌟 Overview
 
-Verity is a truly universal prediction market. While traditional platforms rely on centralized admins or slow human oracles, Verity uses **Google Gemini 1.5 Pro** with **Google Search grounding** to resolve any verifiable event on the web. 
+Verity is a truly universal prediction market. While traditional platforms rely on centralized admins or slow human oracles, Verity uses **Google Gemini ** with **Google Search grounding** to resolve any verifiable event on the web. 
 
 It is a community-first platform where:
 - **Permissionless Creation:** Any user can deploy a market for any topic.
@@ -61,7 +61,7 @@ Each component requires its own `.env` file. Below are the required variables:
 | `SUPABASE_URL` | Your Supabase project URL. |
 | `SUPABASE_SERVICE_KEY` | Supabase Service Role key (for write access). |
 | `GOOGLE_GEMINI_API_KEY` | API Key from [Google AI Studio](https://aistudio.google.com/). |
-| `AI_MODEL_NAME` | (Optional) Defaults to `gemini-1.5-pro`. |
+| `AI_MODEL_NAME` . |
 
 ## 🚀 Getting Started
 
